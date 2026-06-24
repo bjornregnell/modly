@@ -121,7 +121,102 @@ object Router extends cask.MainRoutes:
 
 
   private val singleFlight = Semaphore(1)
-
+  private val helpMarkdown =
+    """# Bjornyx Router
+      |
+      |Purpose:
+      |This server proxies requests to a local Ollama instance and manages one active model at a time.
+      |It is designed for single-flight operation so generation and model switching do not overlap.
+      |
+      |## Endpoints
+      |
+      |### `GET /health`
+      |Returns a basic health check.
+      |
+      |Example:
+      |```bash
+      |curl -s http://localhost:8080/health
+      |```
+      |
+      |Response:
+      |```json
+      |{"status":"ok","service":"bjornyx-router"}
+      |```
+      |
+      |### `GET /models`
+      |Lists the available Ollama models and the current active model.
+      |
+      |Response fields:
+      |- `models`: the models reported by Ollama
+      |- `active_model`: the currently selected model, or `null`
+      |
+      |Example:
+      |```bash
+      |curl -s http://localhost:8080/models
+      |```
+      |
+      |Response:
+      |```json
+      |{"models":["gemma3:latest"],"active_model":"gemma3:latest"}
+      |```
+      |
+      |### `POST /set-model`
+      |Selects the active model explicitly.
+      |The `model` value must be one of the names returned by `GET /models`.
+      |
+      |Request body:
+      |```json
+      |{"model":"gemma3:latest"}
+      |```
+      |
+      |Behavior:
+      |- If the requested model is unknown, the server returns `400`.
+      |- If a different model is already active, the server unloads it through Ollama and loads the new one.
+      |- If the same model is already active, the request is a no-op.
+      |
+      |Example:
+      |```bash
+      |curl -s -X POST http://localhost:8080/set-model -H "Content-Type: application/json" --data '{"model":"gemma3:latest"}'
+      |```
+      |
+      |Success response:
+      |```json
+      |{"model":"gemma3:latest","previous_model":null,"changed":true}
+      |```
+      |
+      |Error response:
+      |```json
+      |{"error":"unknown model: not-a-real-model","models":["gemma3:latest"]}
+      |```
+      |
+      |### `POST /generate`
+      |Generates a response using the current active model.
+      |If no model is active yet, the router picks one from the available models using the prompt.
+      |
+      |Request body:
+      |```json
+      |{"prompt":"hello","temperature":0.1}
+      |```
+      |
+      |Parameters:
+      |- `prompt` required string
+      |- `temperature` optional number
+      |
+      |Example:
+      |```bash
+      |curl -s -X POST http://localhost:8080/generate -H "Content-Type: application/json" --data '{"prompt":"hello","temperature":0.1}'
+      |```
+      |
+      |Response:
+      |```json
+      |{"model":"gemma3:latest","response":"..."}
+      |```
+      |
+      |## Typical flow
+      |1. Call `GET /models`.
+      |2. Call `POST /set-model` with one of those model names.
+      |3. Call `POST /generate` as needed.
+      |""".stripMargin
   private var cachedModels: List[String] = Nil
   private var activeModel: Option[String] = None
 
@@ -152,6 +247,10 @@ object Router extends cask.MainRoutes:
   @cask.get("/health")
   def health() =
     ujson.Obj("status" -> "ok", "service" -> "bjornyx-router")
+
+  @cask.get("/help")
+  def help() =
+    ujson.Obj("help" -> helpMarkdown)
 
   @cask.get("/models")
   def models() =
