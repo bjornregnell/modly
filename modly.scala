@@ -122,21 +122,19 @@ object Router extends cask.MainRoutes:
     ujson.Obj("models" -> m)
 
   @cask.postJson("/generate")
-  def generate(req: ujson.Value) =
-    val parsed = read[GenerateRequest](req.render())
-
+  def generate(prompt: String, model: Option[String] = None, temperature: Option[Double] = None) =
     val models = if cachedModels.isEmpty then refresh() else cachedModels
 
-    val model =
-      parsed.model.getOrElse(
-        ModelRouter.pickModel(parsed.prompt, models)
+    val selectedModel =
+      model.getOrElse(
+        ModelRouter.pickModel(prompt, models)
       )
 
     val result =
-      OllamaClient.generate(model, parsed.prompt)
+      OllamaClient.generate(selectedModel, prompt)
 
     ujson.Obj(
-      "model" -> model,
+      "model" -> selectedModel,
       "response" -> result
     )
 
