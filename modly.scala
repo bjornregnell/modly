@@ -1,8 +1,8 @@
 //> using scala "3.8.4"
 //> using jvm 21
 //> using dep com.lihaoyi::cask:0.11.3
-//> using dep com.lihaoyi::upickle:4.0.2
-//> using dep com.lihaoyi::os-lib:0.11.3
+//> using dep com.lihaoyi::upickle:4.4.3
+//> using dep com.lihaoyi::os-lib:0.11.8
 
 import java.util.concurrent.Semaphore
 
