@@ -116,7 +116,7 @@ object OllamaClient:
 object Router extends cask.MainRoutes:
 
   println("Bjornyx Router starting...")
-  println("http://0.0.0.0:8099")
+  println("http://0.0.0.0:8080")
   println("backend: Ollama :11434")
 
 
