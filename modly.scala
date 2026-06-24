@@ -4,6 +4,8 @@
 //> using dep com.lihaoyi::upickle:4.0.2
 //> using dep com.lihaoyi::os-lib:0.11.3
 
+import java.util.concurrent.Semaphore
+
 import upickle.default.{ReadWriter, macroRW, read}
 
 /**
@@ -76,14 +78,7 @@ object OllamaClient:
         println(s"[ollama error] ${e.getMessage}")
         Nil
 
-  def generate(model: String, prompt: String): String =
-    val payload =
-      ujson.Obj(
-        "model" -> model,
-        "prompt" -> prompt,
-        "stream" -> false
-      )
-
+  private def postGenerate(payload: ujson.Obj): String =
     os.proc(
       "curl",
       "-s",
@@ -92,6 +87,25 @@ object OllamaClient:
       "-H", "Content-Type: application/json",
       "--data", payload.render()
     ).call().out.text()
+
+  def generate(model: String, prompt: String, temperature: Option[Double]): String =
+    val payload =
+      ujson.Obj(
+        "model" -> model,
+        "prompt" -> prompt,
+        "stream" -> false
+      )
+
+    temperature.foreach: t =>
+      payload("options") = ujson.Obj("temperature" -> t)
+
+    postGenerate(payload)
+
+  def loadModel(model: String): String =
+    postGenerate(ujson.Obj("model" -> model, "stream" -> false))
+
+  def unloadModel(model: String): String =
+    postGenerate(ujson.Obj("model" -> model, "keep_alive" -> 0, "stream" -> false))
 
 /**
  * =========================
@@ -106,11 +120,34 @@ object Router extends cask.MainRoutes:
   println("backend: Ollama :11434")
 
 
-  var cachedModels: List[String] = Nil
+  private val singleFlight = Semaphore(1)
 
-  def refresh(): List[String] =
+  private var cachedModels: List[String] = Nil
+  private var activeModel: Option[String] = None
+
+  private def withSingleFlight[T](body: => T): T =
+    singleFlight.acquire()
+    try body
+    finally singleFlight.release()
+
+  private def refresh(): List[String] =
     cachedModels = OllamaClient.listModels()
     cachedModels
+
+  private def availableModels: List[String] =
+    if cachedModels.isEmpty then refresh() else cachedModels
+
+  private def modelJson(model: Option[String]): ujson.Value =
+    model match
+      case Some(value) => ujson.Str(value)
+      case None => ujson.Null
+
+  private def ensureActiveModel(prompt: String): String =
+    activeModel.getOrElse:
+      val selected = ModelRouter.pickModel(prompt, availableModels)
+      OllamaClient.loadModel(selected)
+      activeModel = Some(selected)
+      selected
 
   @cask.get("/health")
   def health() =
@@ -118,25 +155,47 @@ object Router extends cask.MainRoutes:
 
   @cask.get("/models")
   def models() =
-    val m = if cachedModels.isEmpty then refresh() else cachedModels
-    ujson.Obj("models" -> m)
+    ujson.Obj(
+      "models" -> availableModels,
+      "active_model" -> modelJson(activeModel)
+    )
+
+  @cask.postJson("/set-model")
+  def setModel(model: String) =
+    withSingleFlight:
+      val models = availableModels
+
+      if !models.contains(model) then
+        cask.Response(
+          ujson.Obj("error" -> ("unknown model: " + model), "models" -> models),
+          statusCode = 400
+        )
+      else
+        val previous = activeModel
+
+        if !previous.contains(model) then
+          previous.foreach(OllamaClient.unloadModel)
+          OllamaClient.loadModel(model)
+          activeModel = Some(model)
+
+        cask.Response(
+          ujson.Obj(
+            "model" -> model,
+            "previous_model" -> modelJson(previous),
+            "changed" -> !previous.contains(model)
+          )
+        )
 
   @cask.postJson("/generate")
-  def generate(prompt: String, model: Option[String] = None, temperature: Option[Double] = None) =
-    val models = if cachedModels.isEmpty then refresh() else cachedModels
+  def generate(prompt: String, temperature: Option[Double] = None) =
+    withSingleFlight:
+      val selectedModel = ensureActiveModel(prompt)
+      val result = OllamaClient.generate(selectedModel, prompt, temperature)
 
-    val selectedModel =
-      model.getOrElse(
-        ModelRouter.pickModel(prompt, models)
+      ujson.Obj(
+        "model" -> selectedModel,
+        "response" -> result
       )
-
-    val result =
-      OllamaClient.generate(selectedModel, prompt)
-
-    ujson.Obj(
-      "model" -> selectedModel,
-      "response" -> result
-    )
 
   initialize()
 
