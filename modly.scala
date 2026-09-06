@@ -23,6 +23,11 @@ import upickle.default.{ReadWriter, macroRW, read}
  * =========================
  */
 
+// Hand-set: bump on a release. It says what someone INTENDED to ship, which is useful and also
+// exactly the kind of carrier that drifts when a bump is forgotten — so it is deliberately paired
+// with `buildStamp` below, which is read off the running artifact and cannot be forgotten.
+val Version = "0.2.0"  // 0.2.0: JDK HttpClient instead of a curl subprocess; failures reported as failures
+
 val Host = "0.0.0.0"   // bind all interfaces so the LAN can reach modly (cask default is localhost)
 val Port = 8080        // modly HTTP port
 val OllamaPort = 11434 // backend Ollama port
@@ -149,7 +154,7 @@ object Router extends cask.MainRoutes:
   override def host: String = Host
   override def port: Int = Port
 
-  println("Bjornyx Router starting...")
+  println(s"Bjornyx Router starting... version $Version (build $buildStamp)")
   println(s"http://$Host:$Port")
   println(s"backend: Ollama :$OllamaPort")
 
@@ -166,7 +171,9 @@ object Router extends cask.MainRoutes:
     |### `GET /health`
     |PROBES the Ollama backend and reports what it found — it does not merely say the server is running.
     |Response fields: `status` (`ok`/`degraded`), `ollama_reachable`, `model_count` or `error`,
-    |plus `started_at` + `uptime_seconds` so a process older than its own JDK is visible without ssh.
+    |plus `version` (hand-set), `build` (mtime of the artifact actually loaded — this is the one that
+    |cannot be forgotten), and `started_at` + `uptime_seconds`. Together these answer "is the box
+    |running what I just deployed?" over HTTP, without ssh.
     |- Backend unreachable -> `503` with `status: degraded` and the reason.
     |```bash
     |curl -s http://localhost:$Port/health
@@ -211,6 +218,17 @@ object Router extends cask.MainRoutes:
   // /health now carries it, so "restart it" is a decision anyone can reach without ssh.
   private val startedAt: java.time.Instant = java.time.Instant.now()
 
+  /** Build stamp of the artifact the JVM ACTUALLY loaded — the jar's own mtime, or the classes dir
+    * when run straight from source. `Version` above can be forgotten; this cannot, because nobody
+    * writes it. Together they answer the two different questions "which release is this meant to be"
+    * and "is the box running the file I just deployed", and today needed the second one: the jar on
+    * disk was current while the process was five weeks older, and only `ps -o lstart=` could say so. */
+  private lazy val buildStamp: String =
+    try
+      val src = java.io.File(getClass.getProtectionDomain.getCodeSource.getLocation.toURI)
+      java.time.Instant.ofEpochMilli(src.lastModified()).toString
+    catch case _: Throwable => "unknown"
+
   private var activeModel: Option[String] = None
   private var activeTemperature: Option[Double] = None
   private var activeSeed: Option[Int] = None
@@ -253,6 +271,8 @@ object Router extends cask.MainRoutes:
     val uptime = java.time.Duration.between(startedAt, java.time.Instant.now())
     val base = ujson.Obj(
       "service" -> "bjornyx-router",
+      "version" -> Version,
+      "build" -> buildStamp,
       "started_at" -> startedAt.toString,
       "uptime_seconds" -> uptime.toSeconds.toDouble
     )
